@@ -4,11 +4,8 @@ This repository contains the analysis scripts for the **Psylect trial** (Clinica
 
 The full study protocol is available [here](https://www.tandfonline.com/doi/10.1080/14737175.2022.2083959).
 
-> 📄 Results from the primary analysis were published in **JAMA Psychiatry**:  
-> [https://jamanetwork.com/journals/jamapsychiatry/fullarticle/2813623](https://jamanetwork.com/journals/jamapsychiatry/fullarticle/2813623)
-
-> 📄 Ancillary analysis on symptom clusters was published in the **Brazilian Journal of Psychiatry**:  
-> [https://www.bjp.org.br/details/3592/en-US/effects-of-home-use-transcranial-direct-current-stimulation-on-clusters-of-depressive-symptoms--an-ancillary-analysis-of-the-psylect-study](https://www.bjp.org.br/details/3592/en-US/effects-of-home-use-transcranial-direct-current-stimulation-on-clusters-of-depressive-symptoms--an-ancillary-analysis-of-the-psylect-study)
+> 📄 Results from the primary analysis were published in [**JAMA Psychiatry**](https://jamanetwork.com/journals/jamapsychiatry/fullarticle/2813623)
+> 📄 Ancillary analysis on symptom clusters was published in the **[Brazilian Journal of Psychiatry]**(https://www.bjp.org.br/details/3592/en-US/effects-of-home-use-transcranial-direct-current-stimulation-on-clusters-of-depressive-symptoms--an-ancillary-analysis-of-the-psylect-study)
 
 # 📊 Analysis Overview
 1_data_cleaning.R
