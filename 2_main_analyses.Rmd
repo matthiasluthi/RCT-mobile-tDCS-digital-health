@@ -1,0 +1,1499 @@
+---
+title: "Primary Analysis of Psylect"
+author: "Matthias Lüthi"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    number_sections: true
+    toc_float: true
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+
+# Only show figures and tables:
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+# Setup
+Load libraries, cleaned data & custom utility functions, define script-specific functions, create additional data frames for analysis
+
+```{r load-libraries-data}
+library(MASS)
+library(tidyverse)
+library(sjmisc)
+library(lme4)
+library(lmerTest)
+library(lmtest)
+library(broom.mixed)
+library(emmeans)
+library(effectsize)
+library(flextable)
+library(ftExtra)
+library(ggpubr)
+library(BI)
+library(ggmap)
+
+select <- dplyr::select
+
+source("0_custom_functions.R")
+
+load("data/psylect_clean.RData")
+load("data/psylect_endpoint_clean.RData")
+pslct <- psylect
+rm(psylect)
+
+
+```
+
+```{r define-functions}
+# script-specific ufility functions
+create_contrast_table <- function(df, outcomes, print = FALSE) {
+  # Create empty df that will contain the contrats
+  results <- tibble(
+    Characteristic = character(),
+    `Change until week 6::Double active` = character(),
+    `Change until week 6::mtDCS only` = character(),
+    `Change until week 6::Double sham` = character(),
+    `Double active vs. mtDCS only::P` = character(),
+    `Double active vs. mtDCS only::Cohen's d` = character(),
+    `Double active vs. double sham::P` = character(),
+    `Double active vs. double sham::Cohen's d` = character(),
+    `mtDCS only vs. double sham::P` = character(),
+    `mtDCS only vs. double sham::Cohen's d` = character()
+  )
+  
+  for (out in outcomes) {
+    current_scale <- gsub("_total", "", out)
+
+    # Create LMM for current outcome
+    if (out == "cgi_1") {
+      formula <- formula(paste(out, " ~ Groups*week + (1|subject)"))
+    } else {
+      formula <- formula(paste(out, " ~ Groups*week + (week|subject)"))
+    }
+    lmm <- lmer(formula, df)
+    if (print == TRUE) {print(summary(lmm))}
+
+    # Create emmeans trends for current object
+    emt <- emtrends(lmm, ~Groups, var = "week")
+
+    emt.estimates <- summary(emt) %>%
+      mutate(Estimate = paste0(round(6*week.trend, digits = 2),
+                              " [",
+                              round(6*lower.CL, digits = 2),
+                              ", ",
+                              round(6*upper.CL, digits = 2),
+                              "]"))
+    
+    ps <- round(summary(pairs(emt, adjust = "none"))$p.value, 3)
+    # print(out)
+
+    es <- summary(eff_size(emt, sigma = sigma(lmm), edf = df.residual(lmm))) %>%
+      mutate(cohensd = paste0(
+        round(6*effect.size, 2),
+        " [",
+        round(6*lower.CL, 2),
+        ", ",
+        round(6*upper.CL, 2),
+        "]"
+      ))
+
+  results[nrow(results) + 1, ] <- t(c(current_scale, emt.estimates$Estimate,
+                                  (rbind(ps, es$cohensd))))
+  }
+  return(results)
+}
+
+create_weekly_contrasts <- function(df, outcomes, print = FALSE) {
+  for (out in outcomes2) {
+    print(out)
+    scale <- gsub("_total", "", out)
+    
+    # Create LMM for current outcome
+    if (out %in% random_slopes) {
+      formula <- formula(paste(out, " ~ condition_alt*week + (week|subject)"))
+    } else {
+      formula <- formula(paste(out, " ~ condition_alt*week + (1|subject)"))
+    }
+    
+    if (out == "cgi_2 ") {
+      lmm <- lmer(formula, df)
+    } else {
+      lmm <- lmer(formula, df, 
+                  control = lmerControl(optimizer ="Nelder_Mead"))
+    }
+    if (print == TRUE) {print(summary(lmm))}
+
+    # Create emmeans
+    emm <- emmeans(lmm, ~condition_alt*week, at=list(week = c(0, 2, 3, 4, 6)))
+    weekly_contrasts <- summary(pairs(emm, by = "week", adjust = "none"))
+    
+    if (any(weekly_contrasts$p.value < .05)) {
+      print(paste0("Significant differences in ", out, "!!!"))
+    }
+
+    # a 95% confidence interval is obtained as the values 1.96×SE either side of 
+    # the mean.
+    weekly_contrasts <- weekly_contrasts %>%
+      mutate(values = paste0(round(estimate, 2),
+                               " [",
+                               round(estimate - 1.96*SE, 2),
+                               ", ",
+                               round(estimate + 1.96*SE, 2),
+                               "]"
+                               )) %>%
+      select(contrast, week, values) %>%
+      pivot_wider(names_from = "week",
+                   values_from = "values",
+                   names_sep = "_") %>%
+      add_row(contrast = {{scale}}, .before = 1)
+    
+    # Create dataframe and name columns if it does not exist yet
+    if (out == outcomes[1]) {
+      results <- weekly_contrasts
+    } else {
+      results <- rbind(results, weekly_contrasts)
+    }
+
+  }
+
+  return(results %>% 
+           mutate(
+             contrast = str_replace(contrast, "\\(", ""),
+             contrast = str_replace(contrast, "\\)", "")
+           ))
+}
+
+report_chisq <- function(table) {
+  if (any(table  < 6)) {
+    test <- fisher.test(table)
+    return(paste0(
+      "Fisher's exact test:",  
+      "\nP = ",  
+      round(test$p.value, 3))
+    )
+  } else {
+    test <- chisq.test(table)
+    return(paste0(
+      "χ2 = ",  
+      round(test$statistic, 2), 
+      ", \nP = ",  
+      round(test$p.value, 3))
+      )
+  }
+}
+```
+
+
+```{r additional-dfs-vars}
+severities <- c("side_g_1", "side_g_2", "side_g_3", "side_g_4", "side_g_5", 
+                "side_g_6", "side_g_7", "side_g_8", "side_g_9", "side_g_10",
+                "side_g_11", "side_g_13", "side_g_14", "side_g_15", 
+                "side_g_16")
+
+side_fx = c("no_side_fx", "mild_side_fx", "moderate_side_fx", 
+            "severe_side_fx")
+
+# Make dfs only with weeks 0, 2, 3, 4, 6 (many scales were only collected at these weeks)
+pslct5 <- pslct %>%
+  filter(week == 0 | week == 2 | week == 3 | week == 4 | week == 6)
+
+pslct3 <- pslct %>%
+  filter(week == 0 | week == 3 | week == 6)
+
+pslct2 <- pslct %>%
+  filter(week == 0 | week == 6)
+
+pslct0 <- filter(pslct, week == 0)
+
+summaries5 <- pslct5 %>%
+  group_by(week, Groups) %>%  
+  summarise(across(c(hamd_total, madrs_total, bdi_total),
+  list(Mean = ~mean(.x, na.rm = TRUE), 
+       SD = ~sd(.x, na.rm = TRUE), 
+       SEM = ~sd(.x, na.rm = TRUE)/sqrt(sum(!is.na(.x))),
+       N = ~sum(!is.na(.x))
+  ),
+  .names = "{col}_{fn}")
+  ) %>%
+  ungroup()
+
+summaries3 <- pslct3 %>%
+  group_by(week, Groups) %>%
+  summarise(across(c(hama_total, panas_positive_total, panas_negative_total, 
+                     stai_s_total, stai_t_total),
+                   list(Mean = ~mean(.x, na.rm = TRUE), 
+                        SD = ~sd(.x, na.rm = TRUE),
+                        SEM = ~sd(.x, na.rm = TRUE)/sqrt(sum(!is.na(.x))),
+                        N = ~sum(!is.na(.x))
+                   ),
+                   .names = "{col}_{fn}")
+  )
+
+summaries2 <- pslct2 %>%
+  group_by(week, Groups) %>%
+  summarise(across(c(cgi_1, cgi_2),
+                   list(Mean = ~mean(.x, na.rm = TRUE), 
+                        SD = ~sd(.x, na.rm = TRUE),
+                        SEM = ~sd(.x, na.rm = TRUE)/sqrt(sum(!is.na(.x))),
+                        N = ~sum(!is.na(.x))
+                   ),
+                   .names = "{col}_{fn}")
+  )
+
+summaries_usability <- pslct %>%
+  group_by(week, Groups) %>%  
+  summarise(across(usability,
+  list(Mean = ~mean(.x, na.rm = TRUE), 
+       SD = ~sd(.x, na.rm = TRUE), 
+       SEM = ~sd(.x, na.rm = TRUE)/sqrt(sum(!is.na(.x))),
+       N = ~sum(!is.na(.x))
+  ),
+  .names = "{col}_{fn}")
+  ) %>%
+  ungroup()
+
+# summaries most common AE
+most_common_aes <- sapply(c(5, 9, 8, 10, 6, 1), function(x) paste0("side_", x))
+
+most_common_aes2 <- as.vector(sapply(most_common_aes, function(x) c(paste0(x, "_No"), paste0(x, "_Prcnt"))))
+
+ae_summaries <- endpoint %>%
+  group_by(condition_alt) %>%
+  summarize(across(all_of(most_common_aes),
+                   list(No = ~ sum(.x == "1", na.rm=TRUE),
+                        Prcnt = ~ sum(.x == "1", na.rm=TRUE)/sum(!is.na(.x))*100)
+                   )) %>%
+  pivot_longer(cols = all_of(most_common_aes2),
+               names_to = "AE",
+               values_to = "Frequency"
+  ) %>% 
+  mutate(
+    AE_named = case_when(
+      grepl("side_5", AE) ~ "Tingling",
+      grepl("side_9", AE) ~ "Local redness",
+      grepl("side_8", AE) ~ "Heat/Burning",
+      grepl("side_10", AE) ~ "Somnolence",
+      grepl("side_6", AE) ~ "Itching",
+      grepl("side_1", AE) ~ "Headache"), 
+    AE_named = factor(AE_named, levels = c(
+      "Tingling",
+      "Local redness",
+      "Heat/Burning",
+      "Somnolence",
+      "Itching",
+      "Headache"
+    ))
+  )
+
+```
+
+
+# Figures
+
+```{r geomap}
+map_sp_toner <- get_map('Vila Mariana, São Paulo, Brazil', 
+                        maptype='terrain', source="google", zoom = 10,
+                        color = "bw")
+
+ggmap(map_sp_toner)  +
+  stat_density2d(data = endpoint, aes(x = lon, y = lat,
+                                fill = ..level..), alpha = 0.3, geom = "polygon") +
+  scale_fill_viridis_c() +
+  geom_point(data = data.frame(lon = -46.671490, lat = -23.557420),
+             aes(color = "red")) +
+  coord_fixed() +
+  labs(x = "Longitude", y = "Latitude", fill = "Density")  
+
+```
+
+*Note.* Density/heat map showing participant distribution density over the greater area of São Paulo, Brazil. The red dot represents the study center (Instituto de Psiquiatria - HC/FMUSP, Rua Dr. Ovídio Pires de Campos, 785 CEP 05403-903, São Paulo - SP, Brazil).
+
+The following figures show the development of all primary and secondary
+outcomes measures during the course of the study, separated by group.
+Error bars represent standard errors of the mean (SEM).
+
+```{r figures-for-publication}
+plot_2 <- endpoint %>%
+  group_by(Groups) %>%
+  summarize(
+         Response = sum(hamd_response, na.rm = TRUE)/sum(!is.na(hamd_response))*100,
+         Remission = sum(hamd_remission, na.rm = TRUE)/sum(!is.na(hamd_remission))*100
+         ) %>%
+  pivot_longer(cols = c(Response, Remission),
+               names_to = "Type",
+               values_to = "Prcnt") %>%
+  ggplot(aes(x = Groups, y = Prcnt, fill = Groups)) +
+  geom_bar(position="stack", stat="identity", show.legend = FALSE) +
+  geom_text(aes(label = sapply(round(Prcnt, 0), function(x) paste0(x, "%"))), 
+            nudge_y = 4, size = 4) +
+  scale_fill_brewer(palette = "Dark2", direction = 1) +
+  labs(y = "Percent", x = "") +
+  scale_y_continuous(limits = c(0, 100)) +
+  scale_x_discrete(labels = function(x) 
+    stringr::str_wrap(x, width = 5))+
+  facet_wrap(~Type) +
+  theme_pub()  + 
+  theme(axis.text = element_text(size = 10))
+
+
+plot_1 <- ggplot(summaries5, aes(x = week, y = hamd_total_Mean, 
+                       color = Groups, shape = Groups)) +
+  geom_line(size = 0.75) +
+  geom_point(size = 1.8, position = position_dodge(width=0.15)) +
+  #geom_point(size = 2) +
+  geom_errorbar(aes(ymin = hamd_total_Mean - hamd_total_SEM,
+                    ymax = hamd_total_Mean + hamd_total_SEM),
+                width = 0.3,
+                size = 0.75,
+                alpha = 0.8,
+                position = position_dodge(width=0.15)
+  ) +
+  scale_x_continuous(breaks = c(0, 2, 3, 4, 6)) +
+  expand_limits(y = 0) +
+  scale_color_brewer(palette = "Dark2", direction = 1) +
+  labs(y = "HDRS-17", x = "Week") +
+  theme_pub() + 
+  theme(axis.text = element_text(size = 10))
+
+ggarrange(plot_1, plot_2, labels = c("A", "B"), 
+          common.legend = TRUE, legend = "bottom")
+
+ggsave("output/HDRS_combined.png", width = 10, height = 6)
+ggsave("output/HDRS_combined.svg", width = 10, height = 6)
+```
+
+```{r only-line-plot}
+ggplot(summaries5, aes(x = week, y = hamd_total_Mean, 
+                       color = Groups, shape = Groups)) +
+  geom_line(size = 0.75) +
+  geom_point(size = 1.8, position = position_dodge(width=0.15)) +
+  #geom_point(size = 2) +
+  geom_errorbar(aes(ymin = hamd_total_Mean - hamd_total_SEM,
+                    ymax = hamd_total_Mean + hamd_total_SEM),
+                width = 0.3,
+                size = 0.75,
+                alpha = 0.8,
+                position = position_dodge(width=0.15)
+  ) +
+  scale_x_continuous(breaks = c(0, 2, 3, 4, 6)) +
+  expand_limits(y = 0) +
+  scale_color_brewer(palette = "Dark2", direction = 1) +
+  labs(y = "HDRS-17", x = "Week") +
+  theme_pub() + 
+  theme(axis.text = element_text(size = 12))  # 10 normally, 12 for presentation
+
+ggsave("output/HDRS_LinePlot.png", width = 10, height = 7)
+ggsave("output/HDRS_LinePlot.svg", width = 10, height = 7)
+
+```
+
+```{r only-response-remission}
+endpoint %>%
+  group_by(Groups) %>%
+  summarize(
+         Response = sum(hamd_response, na.rm = TRUE)/sum(!is.na(hamd_response))*100,
+         Remission = sum(hamd_remission, na.rm = TRUE)/sum(!is.na(hamd_remission))*100
+         ) %>%
+  pivot_longer(cols = c(Response, Remission),
+               names_to = "Type",
+               values_to = "Prcnt") %>%
+  ggplot(aes(x = Groups, y = Prcnt, fill = Groups)) +
+  geom_bar(position="stack", stat="identity", show.legend = FALSE) +
+  geom_text(aes(label = sapply(round(Prcnt, 0), function(x) paste0(x, "%"))), 
+            nudge_y = 4, size = 4) +
+  scale_fill_brewer(palette = "Dark2", direction = 1) +
+  labs(y = "Percent", x = "") +
+  scale_y_continuous(limits = c(0, 100)) +
+  scale_x_discrete(labels = function(x) 
+    stringr::str_wrap(x, width = 5))+
+  facet_wrap(~Type) +
+  theme_pub()  + 
+  theme(axis.text = element_text(size = 12)) # 10 normally, 12 for presentation
+
+ggsave("output/HDRS_ResponseRemission.png", width = 9, height = 7)
+ggsave("output/HDRS_ResponseRemission.svg", width = 9, height = 7)
+```
+
+```{r primary-and-secondary-outcomes}
+ggplot(summaries5, aes(x = week, y = hamd_total_Mean, 
+                       color = Groups, shape = Groups)) +
+  geom_line(size = 0.75) +
+  geom_point(size = 1.8, position = position_dodge(width=0.15)) +
+  #geom_point(size = 2) +
+  geom_errorbar(aes(ymin = hamd_total_Mean - hamd_total_SEM,
+                    ymax = hamd_total_Mean + hamd_total_SEM),
+                width = 0.3,
+                size = 0.75,
+                alpha = 0.8,
+                position = position_dodge(width=0.15)
+  ) +
+  scale_x_continuous(breaks = c(0, 2, 3, 4, 6)) +
+  expand_limits(y = 0) +
+  scale_color_brewer(palette = "Set2", direction = 1) +
+  labs(y = "HDRS-17", x = "Week") +
+  theme_pub() 
+# ggsave("output/HAMD_SEM.png")
+# ggsave("output/HAMD_SEM.svg")
+
+
+ggplot(summaries5, aes(x = week, y = madrs_total_Mean, 
+                       color = Groups, shape = Groups)) +
+  geom_line(size = 0.75) +
+  geom_point(size = 1.8, position = position_dodge(width=0.15)) +
+  geom_errorbar(aes(ymin = madrs_total_Mean - madrs_total_SEM,
+                    ymax = madrs_total_Mean + madrs_total_SEM),
+                width = 0.3,
+                size = 0.75,
+                alpha = 0.8,
+                position = position_dodge(width=0.15)
+  ) +
+  scale_x_continuous(breaks = c(0, 2, 3, 4, 6)) +
+  expand_limits(y = 0) +
+  scale_color_brewer(palette = "Set2", direction = 1) +
+  labs(y = "MADRS", x = "Week") +
+  theme_pub() 
+# ggsave("output/MADRS_SEM.png")
+# ggsave("output/MADRS_SEM.svg")
+
+ggplot(summaries5, aes(x = week, y = bdi_total_Mean, 
+                       color = Groups, shape = Groups)) +
+  geom_line(size = 0.75) +
+  geom_point(size = 1.8, position = position_dodge(width=0.15)) +
+  geom_errorbar(aes(ymin = bdi_total_Mean - bdi_total_SEM,
+                    ymax = bdi_total_Mean + bdi_total_SEM),
+                width = 0.3,
+                size = 0.75,
+                alpha = 0.8,
+                position = position_dodge(width=0.15)
+  ) +
+  scale_x_continuous(breaks = c(0, 2, 3, 4, 6)) +
+  expand_limits(y = 0) +
+  scale_color_brewer(palette = "Set2", direction = 1) +
+  labs(y = "BDI", x = "Week") +
+  theme_pub() 
+# ggsave("output/BDI_SEM.png")
+# ggsave("output/BDI_SEM.svg")
+
+
+
+ggplot(summaries3, aes(x = week, y = hama_total_Mean, 
+                       color = Groups, shape = Groups)) +
+  geom_line(size = 0.75) +
+  geom_point(size = 1.8, position = position_dodge(width=0.15)) +
+  geom_errorbar(aes(ymin = hama_total_Mean - hama_total_SEM,
+                    ymax = hama_total_Mean + hama_total_SEM),
+                width = 0.3,
+                size = 0.75,
+                alpha = 0.8,
+                position = position_dodge(width=0.15)
+  ) +
+  scale_x_continuous(breaks = c(0, 3, 6)) +
+  expand_limits(y = 0) +
+  scale_color_brewer(palette = "Set2", direction = 1) +
+  labs(y = "HAM-A", x = "Week") +
+  theme_pub() 
+# ggsave("output/HAMA_SEM.svg")
+# ggsave("output/HAMA_SEM.png")
+
+
+ggplot(summaries3, aes(x = week, y = panas_negative_total_Mean, 
+                       color = Groups, shape = Groups)) +
+  geom_line(size = 0.75) +
+  geom_point(size = 1.8, position = position_dodge(width=0.15)) +
+  geom_errorbar(aes(ymin = panas_negative_total_Mean - panas_negative_total_SEM,
+                    ymax = panas_negative_total_Mean + panas_negative_total_SEM),
+                width = 0.3,
+                size = 0.75,
+                alpha = 0.8,
+                position = position_dodge(width=0.15)
+  ) +
+  scale_x_continuous(breaks = c(0, 3, 6)) +
+  expand_limits(y = 0) +
+  scale_color_brewer(palette = "Set2", direction = 1) +
+  labs(y = "Negative affect (PANAS)", x = "Week") +
+  theme_pub() 
+# ggsave("output/AfetoNegativo_SEM.svg")
+# ggsave("output/AfetoNegativo_SEM.png")
+
+ggplot(summaries3, aes(x = week, y = panas_positive_total_Mean, 
+                       color = Groups, shape = Groups)) +
+  geom_line(size = 0.75) +
+  geom_point(size = 1.8, position = position_dodge(width=0.15)) +
+  geom_errorbar(aes(ymin = panas_positive_total_Mean - panas_positive_total_SEM,
+                    ymax = panas_positive_total_Mean + panas_positive_total_SEM),
+                width = 0.3,
+                size = 0.75,
+                alpha = 0.8,
+                position = position_dodge(width=0.15)
+  ) +
+  scale_x_continuous(breaks = c(0, 3, 6)) +
+  expand_limits(y = 0) +
+  scale_color_brewer(palette = "Set2", direction = 1) +
+  labs(y = "Positive affect (PANAS)", x = "Week") +
+  theme_pub() 
+# ggsave("output/AfetoPositivo_SEM.svg")
+# ggsave("output/AfetoPositivo_SEM.png")
+
+ggplot(summaries3, aes(x = week, y = stai_t_total_Mean, 
+                       color = Groups, shape = Groups)) +
+  geom_line(size = 0.75) +
+  geom_point(size = 1.8, position = position_dodge(width=0.15)) +
+  geom_errorbar(aes(ymin = stai_t_total_Mean - stai_t_total_SEM,
+                    ymax = stai_t_total_Mean + stai_t_total_SEM),
+                width = 0.3,
+                size = 0.75,
+                alpha = 0.8,
+                position = position_dodge(width=0.15)
+  ) +
+  scale_x_continuous(breaks = c(0, 3, 6)) +
+  expand_limits(y = 0) +
+  scale_color_brewer(palette = "Set2", direction = 1) +
+  labs(y = "Trait anxiety (STAI)", x = "Week") +
+  theme_pub() 
+# ggsave("output/TraçoAnsiedade_SEM.svg")
+# ggsave("output/TraçoAnsiedade_SEM.png")
+
+ggplot(summaries3, aes(x = week, y = stai_s_total_Mean, 
+                       color = Groups, shape = Groups)) +
+  geom_line(size = 0.75) +
+  geom_point(size = 1.8, position = position_dodge(width=0.15)) +
+  geom_errorbar(aes(ymin = stai_s_total_Mean - stai_s_total_SEM,
+                    ymax = stai_s_total_Mean + stai_s_total_SEM),
+                width = 0.3,
+                size = 0.75,
+                alpha = 0.8,
+                position = position_dodge(width=0.15)
+  ) +
+  scale_x_continuous(breaks = c(0, 3, 6)) +
+  expand_limits(y = 0) +
+  scale_color_brewer(palette = "Set2", direction = 1) +
+  labs(y = "Stait anxiety (STAI)", x = "Week") +
+  theme_pub() 
+# ggsave("output/EstadoAnsiedade_SEM.svg")
+# ggsave("output/EstadoAnsiedade_SEM.png")
+
+# # Usability
+# summaries5 %>%
+#   filter(week != 0) %>%
+#   ggplot(aes(x = week, y = usability_Mean, 
+#              color = Groups, shape = Groups)) +
+#   geom_line(size = 0.75) +
+#   geom_point(size = 1.8, position = position_dodge(width=0.15)) +
+#   geom_errorbar(aes(ymin = usability_Mean - usability_SEM,
+#                     ymax = usability_Mean + usability_SEM),
+#                 width = 0.3,
+#                 size = 0.75,
+#                 alpha = 0.8,
+#                 position = position_dodge(width=0.15)
+#   ) +
+#   scale_x_continuous(breaks = c(0, 3, 6)) +
+#   expand_limits(y = 0) +
+#   scale_color_brewer(palette = "Set2", direction = 1) +
+#   labs(y = "Usability", x = "Week") +
+#   theme_pub()
+
+
+```
+
+# Tables
+## Clinical & demographic information 
+"Table 1"
+```{r table-1}
+# Prepare data frame
+table1 <- data.frame(matrix(nrow = 0, ncol = 5))
+conditions_with_ns <- mapply(function(x, y) paste0(x, "---N = ", y), 
+       levels(pslct0$condition_alt), 
+       pslct0 %>%
+         count(condition_alt) %>%
+         pull(n))
+colnames(table1) <- c("Characteristic",
+                      conditions_with_ns, 
+                      "P")
+
+sample_ns <- pslct0 %>% count(condition_alt) %>% pull(n)
+
+vars <- list(c("Demographics", "", "header row"),
+             c("gender", "Gender (% Female)", "cat", 1),
+             c("age", "Age, y", "cont"),
+             c("ethnicity", "White - no. (%)", "cat", 1),
+             c("schooling", "Completed grad. school - no. (%)", "cat", 3, 4, 5),
+             c("income", "≤ 5 minimum wages, BRL$ - no. (%)", "cat", 1, 2),
+             c("occupation", "Currently employed (% employment)", "cat", 0, 1),
+             # c("occupation", "Currently unemployed (% unemployment)", "cat", 2),
+             c("Clinical characteristics", "", "header row"),
+             c("mini_26", " Onset age of MDD, years - mean (SD)", "cont"),
+             c("mini_27", "No. previous depressive episodes - median (IQR)", "count"),
+             c("mini_28", "Duration of current episode, mo - mean (SD", "cont"),
+             c("antidep_5_calc", "No. failed AD trials in life - median (IQR)", "count"),
+             c("current_resistance", "min. 1 failed AD trial during current episode - no. (%)", "cat", 1, 2, 3),
+             c("current_resistance", "min. 2 failed AD trials during current episode - no. (%)", "cat", 2, 3),
+             c("Type of depression", "", "header row"),
+             c("final_past_dep_y2", "Recurrent - no. (%)", "cat", 1),
+             c("final_dyst_current_y2", "Chronic (>2y episode) - no. (%)", "cat", 1),
+             c("final_melanc_current_y", "Melancholic - no. (%)", "cat", 1),
+             c("final_anx_current_y2", "Comorbid anxiety disorders - no. (%) ", "cat", TRUE),
+             c("family_hist_y", "Family history of mental disorder - no. (%)", "cat", TRUE),
+             c("Treatment in current depressive episode", "", "header row"),
+             c("ssri", "SSRIs - no. (%)", "cat", 1),
+             c("snri", "SNRIs - no. (%)", "cat", 1),
+             c("bupropion", "Bupropion - no. (%)", "cat", 1),
+             c("other_ad", "Other antidepressants - no. (%)", "cat", 1),
+             c("any_AD_y", "No antidepressants - no. (%)", "cat", FALSE),
+             c("benzo_ddd_y", "Benzodiazepines - no. (%)", "cat", TRUE),
+             c("mini_76", "Currently in psychotherapy - no. (%)", "cat", 1),
+             c("Depression scales", "", "header row"),
+             c("hamd_total", "HDRS-17", "cont"),
+             c("madrs_total", "MADRS", "cont"),
+             c("bdi_total", "BDI-II", "cont")
+             )
+
+for (var in vars) {
+  var_name <- var[1]
+  var_desc <- var[2]
+  var_type <- var[3]
+  
+  if (grepl(var_type, "header row")) {
+    table1[nrow(table1)+1, ] <- c(var_name, "", "", "", NA_real_)
+    
+  } else if (grepl(var_type, "cont")) {
+    
+    ns <- pslct0 %>%
+      group_by(condition_alt) %>%
+      summarize(desc = paste0(round(mean(.data[[var_name]], na.rm=TRUE), 1),
+                              " ± ",
+                              round(sd(.data[[var_name]], na.rm=TRUE), 1),
+                              ifelse(
+                                 sum(!is.na(.data[[var_name]])) %in% sample_ns,
+                                 "",
+                                 paste0("(N=", 
+                                        sum(!is.na(.data[[var_name]])), 
+                                        ")"))
+                              )) %>%
+      pull(desc)
+    
+    formula <- as.formula(paste(var_name, "~ condition"))
+    
+    table1[nrow(table1)+1, ] <- c(
+      var_desc,
+      ns,
+      tidy(aov(formula, pslct0))$p.value[1]
+      )
+    
+  } else if (grepl(var_type, "cat")) {
+    relevant_cats <- var[4:length(var)] 
+    df <- pslct0 %>%
+      mutate(current_var = .data[[var_name]] %in% relevant_cats) %>%
+      select(condition_alt, current_var)
+
+    ns <- df %>%
+      group_by(condition_alt) %>%
+      summarize(desc = paste0(sum(current_var, na.rm=TRUE),
+                              " (",
+                              round(sum(current_var, na.rm=TRUE)/sum(!is.na(current_var))*100),
+                              ")",
+                              ifelse(
+                                sum(!is.na(current_var)) %in% sample_ns,
+                                "",
+                                paste0("(N=", 
+                                       sum(!is.na(current_var)), 
+                                       ")"))
+                              )) %>%
+      pull(desc)
+    
+    table1[nrow(table1)+1, ] <- c(
+      var_desc,
+      ns,
+      test_independence(df, "condition_alt", "current_var")
+      )
+    
+  } else if (grepl(var_type, "count")) {
+    ns <- pslct0 %>%
+      group_by(condition_alt) %>%
+      summarize(desc = paste0(median(.data[[var_name]], na.rm=TRUE),
+                              " (",
+                              quantile(.data[[var_name]], na.rm=TRUE, probs = 0.25),
+                              "-",
+                              quantile(.data[[var_name]], na.rm=TRUE, probs = 0.75),
+                              ")",
+                              ifelse(
+                                sum(!is.na(.data[[var_name]])) %in% sample_ns,
+                                "",
+                                paste0("(N=", 
+                                       sum(!is.na(.data[[var_name]])), 
+                                       ")"))
+                              )
+                ) %>%
+      pull(desc)
+    
+    table1[nrow(table1)+1, ] <- c(
+      var_desc,
+      ns,
+      test_count(pslct0, var_name, "condition_alt")
+    )
+  }
+  # browser()
+}
+
+
+ft_table1  <- table1 %>%
+  mutate(P = ifelse(P == "-", 100, round(as.numeric(P), 3)),
+         P = case_when(
+           P == 100 ~ "-",
+           P == 1 ~ ">0.99",
+           P == 0 ~ "<0.001",
+           P > 0.02 ~ as.character(round(P, 2)),
+           TRUE ~ as.character(P))
+           ) %>%
+  flextable() %>%
+  separate_header(sep = "---") %>%
+  italic(i = is.na(table1$P), j = 1) %>%
+  autofit()
+  
+ft_table1
+
+save_as_docx(ft_table1, path = "output/Table.docx")
+```
+
+
+## Table of outcomes
+Summary table
+```{r outcomes-table}
+table5 <- summaries5 %>%
+  pivot_longer(cols = contains("_total_"),
+               names_pattern = "^(.*)_total_(.*)$",
+               names_to = c("Scale", ".value")) %>%
+  arrange(desc(Scale), week) %>%
+  pivot_wider(id_cols = c("Scale", "week"),
+              names_from = "Groups",
+              values_from = c("Mean", "SD", "N"), # Here "SEM" could be added to the table
+              names_glue = "{Groups}---{.value}",
+              names_vary = "slowest") 
+
+table3 <- summaries3 %>%
+  pivot_longer(cols = contains("_total_"),
+               names_pattern = "^(.*)_total_(.*)$",
+               names_to = c("Scale", ".value")) %>%
+  arrange(desc(Scale), week) %>%
+  pivot_wider(id_cols = c("Scale", "week"),
+              names_from = "Groups",
+              values_from = c("Mean", "SD", "N"),
+              names_glue = "{Groups}---{.value}",
+              names_vary = "slowest") 
+
+table_summaries <- union(table5, table3) %>%
+  select(Scale, Week = week, contains("Double"), contains("only"), contains("&")) %>%
+  mutate(across(c(contains("tDCS"), contains("Double")),
+                ~ round(.x, digits = 2)))
+
+table_summaries %>%
+  flextable() %>%
+  span_header(sep = "---") %>%
+  fit_pagewidth()
+
+
+```
+
+Complete outcome table for supplementary material
+```{r outcomes-table-for-supplement}
+
+table5_sup <- summaries5 %>%
+  pivot_longer(cols = contains("_total_"),
+               names_pattern = "^(.*)_total_(.*)$",
+               names_to = c("Scale", ".value")) %>%
+  arrange(desc(Scale), week) %>%
+  pivot_wider(id_cols = c("Groups", "Scale"), 
+               names_from = "week",
+               values_from = c("Mean", "SD"),
+               names_sep = "_"         
+  ) %>%
+  mutate(w0 = paste(round(Mean_0, 2), "±", round(SD_0, 2)),
+         w2 = paste(round(Mean_2, 2), "±", round(SD_2, 2)),
+         w3 = paste(round(Mean_3, 2), "±", round(SD_3, 2)),
+         w4 = paste(round(Mean_4, 2), "±", round(SD_4, 2)),
+         w6 = paste(round(Mean_6, 2), "±", round(SD_6, 2))) %>%
+  select(Groups, Scale, w0:w6)
+
+table3_sup <- summaries3 %>%
+  pivot_longer(cols = contains("_total_"),
+               names_pattern = "^(.*)_total_(.*)$",
+               names_to = c("Scale", ".value")) %>%
+  arrange(desc(Scale), week) %>%
+  pivot_wider(id_cols = c("Groups", "Scale"), 
+               names_from = "week",
+               values_from = c("Mean", "SD"),
+               names_sep = "_"         
+  ) %>%
+  mutate(w0 = paste(round(Mean_0, 2), "±", round(SD_0, 2)),
+         w3 = paste(round(Mean_3, 2), "±", round(SD_3, 2)),
+         w6 = paste(round(Mean_6, 2), "±", round(SD_6, 2))) %>%
+  select(Groups, Scale, w0:w6)
+
+table2_sup <- summaries2 %>%
+  pivot_longer(cols = contains("cgi"),
+               names_pattern = "^(cgi_.*)_(.*)$",
+               names_to = c("Scale", ".value")) %>%
+  arrange(desc(Scale), week) %>%
+  pivot_wider(id_cols = c("Groups", "Scale"), 
+               names_from = "week",
+               values_from = c("Mean", "SD"),
+               names_sep = "_"         
+  ) %>%
+  mutate(w0 = paste(round(Mean_0, 2), "±", round(SD_0, 2)),
+         w6 = paste(round(Mean_6, 2), "±", round(SD_6, 2))) %>%
+  select(Groups, Scale, w0:w6)
+table_summaries_sup <- bind_rows(table5_sup, table3_sup, table2_sup) 
+
+ft_table_summaries_sup <- table_summaries_sup %>%
+  flextable() %>%
+  fit_pagewidth() 
+
+ft_table_summaries_sup %>%
+  save_as_docx(path = "output/Table_Outcomes_Supplement.docx")
+ft_table_summaries_sup
+```
+
+# Analysis of treatment effects
+
+For each outcome variable, a linear mixed model was set up with the
+outcome as dependent variable, time and group as fixed effects, and
+participant as random effect. The main interest are interactions of
+group and time, and a significant result would indicate that changes of
+the outcome depended on group (treatment). However, because there are
+three groups, a significant result would not tell us which groups
+differ. Thus, in accordance with the registered and published study
+protocol, there are 3 co-primary hypotheses: 3 contrasts were set up to 
+test and compare the possible pairs of the 3 groups.
+
+## Primary outcome
+The primary outcome was the Hamilton Depression Rating scale, 17-item version
+(HDRS-17/HAMD).
+
+```{r summaries}
+# Fit the model
+lmm_hdrs <- lmer(hamd_total ~ Groups*week + (week|subject), pslct)
+emt <- emtrends(lmm_hdrs, ~Groups, var = "week")
+
+slope <- summary(emt) %>%
+  mutate(estimates = paste0(round(6*week.trend, digits = 2),
+                          " [",
+                          round(6*lower.CL, digits = 2),
+                          ", ",
+                          round(6*upper.CL, digits = 2),
+                          "]"))
+
+# Create a table with mean and SD at every week
+hdrs_summaries <- pslct %>%
+  filter(week == 0 | week == 2 | week == 3 | week == 4 | week == 6) %>%
+  group_by(week, Groups) %>%  
+  summarise(across(hamd_total,
+  list(Mean = ~mean(.x, na.rm = TRUE), 
+       SD = ~sd(.x, na.rm = TRUE), 
+       SEM = ~sd(.x, na.rm = TRUE)/sqrt(sum(!is.na(.x))),
+       N = ~sum(!is.na(.x))
+  ))
+  ) %>%
+  ungroup() %>%
+  pivot_longer(cols = contains("_total_"),
+               names_pattern = "^(.*)_total_(.*)$",
+               names_to = c("Scale", ".value")) %>%
+  arrange(desc(Scale), week) %>%
+  mutate(Mean_SD = paste0(round(Mean, 2), " ± ", round(SD, 2))) %>%
+  select(-c(Scale, Mean, SD, SEM, N)) %>%
+  pivot_wider(id_cols = Groups,
+               names_from = week,
+               values_from = Mean_SD) %>%
+  mutate(Groups = c("Double active", "tDCS only", "Double sham"),
+         estimates = slope$estimates)
+
+names(hdrs_summaries) <- c("Group", "Baseline", "Week 2", "Week 3", "Week 4",
+                            "Week 6", "Change until week 6")
+
+# Calculate Cohen's d
+cohen <- summary(eff_size(emt, sigma = sigma(lmm_hdrs), edf = df.residual(lmm_hdrs))) %>%
+  mutate(d = paste0(
+    round(6*effect.size, 2),
+    " [",
+    round(6*lower.CL, 2),
+    ", ",
+    round(6*upper.CL, 2),
+    "]"
+  )) 
+
+# Get 95% CI for betas of contrasts
+confints <- confint(pairs(emt)) %>%
+  mutate(CI = paste0(round(estimate, 2), 
+                     " [", 
+                     round(lower.CL, 2), 
+                     ", ", 
+                     round(upper.CL, 2), 
+                     "]"
+                     ))
+
+# Build a contrast table and add Cohen's d
+hdrs_contrasts <- summary(pairs(emt, adjust = "none")) %>%
+  mutate(contrast = c("Double active vs. tDCS only",
+                      "Double active vs. double sham",
+                      "tDCS only vs. double sham"),
+         t.ratio = round(t.ratio, 2),
+         df = round(df),
+         p.value = round(p.value, 3),
+         d = cohen$d,
+         Beta = confints$CI) %>%
+  select(Contrast = contrast, Beta, t = t.ratio, DF = df, P = p.value,
+         `Cohen's d` = d)
+
+hdrs_summaries_ft <- hdrs_summaries %>%
+  flextable() %>%
+  fit_pagewidth()
+  
+hdrs_contrasts_ft <- hdrs_contrasts %>%
+  flextable() %>%
+  fit_pagewidth()
+  
+save_as_docx(hdrs_contrasts_ft, path = "output/HDRS_Contrasts_6.docx")
+save_as_docx(hdrs_summaries_ft, path = "output/HDRS_Summaries_6.docx")
+
+hdrs_summaries_ft
+
+```
+*Note:* Means and standard deviations of HDRS scores 
+per group at each timepoint, and the score changes until week 6, which is the 
+average change as estimated by a linear mixed model, together with 95% confidence intervals. 
+
+```{r}
+hdrs_contrasts_ft
+```
+*Note:* Contrasts (main results) based on comparisons of the average 
+changes (slopes) between groups, together with common test statistics and effect size Cohen's D with 95% confidence intervals.  
+
+It is also possible to test the overall effect of group with a likelihood-ratio-test. 
+This does not differentiate betweeen groups, and thus is less informative, but 
+since nothing is significant, it can be used to summarize the results more 
+easily, such as: 
+A likelihood ratio test indicated that HDRS-17 changes over time did not 
+significantly differ between groups, χ2 = 0.98, DF = 2, P = 0.613. 
+
+## Response & Remission
+```{r response-remission-descriptives}
+resp_rem <- pslct %>%
+  group_by(Groups, week) %>%
+  summarize(
+    "Response - no. (%)" = paste0(
+      sum(hamd_response, na.rm=T), 
+      " (", 
+      round(sum(hamd_response, na.rm=T)/sum(!is.na(hamd_response))*100),
+      ")"
+      ),
+    "Remission - no. (%)" = paste0(
+      sum(hamd_remission, na.rm=T), 
+      " (", 
+      round(sum(hamd_remission, na.rm=T)/sum(!is.na(hamd_remission))*100),
+      ")"
+      )
+  ) %>%
+  pivot_wider(id_cols = Groups,
+               names_from = week,
+               values_from = c("Response - no. (%)",
+                               "Remission - no. (%)"),
+               names_sep = "_"
+  ) %>%
+  pivot_longer(cols = "Response - no. (%)_0":"Remission - no. (%)_6",
+               names_sep = "_",
+               names_to = c("Type", ".value")
+  ) %>%
+  arrange(Groups, desc(Type)) %>%
+  select(Groups, Type, "2", "3", "4", "6")
+
+colnames(resp_rem) <- c("Condition", "Type", "Week 2", "Week 3",
+                        "Week 4", "Week 6")
+
+ft_resp_rem <- resp_rem %>% 
+  flextable() %>%
+  align(j =  3:6, align = "right", part = "all") %>%
+  autofit()
+
+ft_resp_rem
+
+save_as_docx(ft_resp_rem, path = "output/Table_ResponseRemission.docx")
+```
+
+```{r response-remission-modeling}
+# # Modeling as mixed models
+# glmer_resp <- glmer(hamd_response ~ condition*week + (1|subject),
+#                 pslct5, family = binomial)
+# # difficult to converge!
+# # glm_resp_ws <- glmer(hamd_response ~ condition*week + (week|subject),
+# #                 pslct5, family = binomial)
+# 
+# anova(glmer_resp)
+# summary(glmer_resp)
+# 
+# glmer_rem <- glmer(hamd_remission ~ condition*week + (1|subject),
+#                 pslct5, family = binomial)
+# # difficult to converge!
+# # glm_rem_ws <- glmer(hamd_remission ~ condition*week + (week|subject),
+# #                 pslct5, family = binomial)
+# summary(glmer_rem)
+# 
+# 
+# logr_resp <- glm(hamd_response ~ condition*week,
+#                 endpoint, family = binomial)
+# summary(logr_resp)
+
+
+# Modeling the last week only
+full_model <- glm(hamd_response ~ Groups,
+                endpoint, family = binomial)
+
+#anova(full_model)
+#summary(full_model)
+
+reduced_model <- glm(hamd_response ~ 1,
+                endpoint, family = binomial)
+#summary(reduced_model)
+
+lrtest(reduced_model, full_model)
+#anova(reduced_model, full_model)
+
+```
+
+## Secondary outcomes
+
+
+```{r main-results}
+# outcomes <- c("hamd_total", names(select(pslct, ends_with("_total"))))
+outcomes <- c("hamd_total", "madrs_total", "bdi_total", "cgi_1", 
+              "hama_total",  "stai_s_total", "stai_t_total", 
+              "panas_negative_total", "panas_positive_total")
+results_table <- create_contrast_table(df = pslct, outcomes = outcomes)
+
+results_ft <- results_table %>%
+  mutate("Characteristic" = c("HDRS-17", "MADRS", "BDI", "CGI-S", "HAM-A",
+                              "STAI-S", "STAI-T", "PANAS negative", 
+                              "PANAS positive")) %>%
+  flextable() %>%
+  span_header(sep = "::") %>%
+  fit_pagewidth()
+
+save_as_docx(results_ft, path = "Table_MainResults_AlwaysRandomSlopeAndIntercept.docx")
+
+results_ft
+```
+*Note.* Change in scores was calculated by obtaining the slope (average change per week) and multiplying it by 6 (the number of weeks). P-values are displayed without multiplicity correction. All models were fit with a random intercept and random slope, except CGI-S was fit with random intercept only because of convergence issues. HDRS-17 Hamilton Depression Rating Scale; BDI Beck Depression Inventory; MADRS Montgomery-Åsberg Depression Rating Scale; CGI Clinical Global Impression; HAM-A Hamilton Anxiety Rating Scale; PANAS Positive and Negative Affect Scale; STAI State-Trait Anxiety Inventory; mtDCS: mobile transcranial direct current stimulation.
+
+If we follow the logic through with moving HDRS results to the main manuscript, 
+we can remove HDRS from this table and present it as "secondary outcomes". 
+
+## Subgroup analyses 
+Subgroup analyses were conducted with liner mixed modeling. Fixed effects were
+group, time, and the subgroup variable, while subject was a random effect with 
+random slope and intercept. The interaction of group, time and subgroup was 
+evaluated using Type III analyses of variance with Satterthwaite estimation of
+degrees of freedom. 
+
+```{r subgroups_combined}
+
+# Chronic vs. non-chronic, psychotherapy yes vs. no, HDRS threshold >= 20
+subgroups <- c("current_psychotherapy_y", "hamd_total_bl", "mini_28", "current_resistance") # "mini_28", 
+subgroup_names <- c("Currently in psychotherapy (1)",
+                    "HDRS-17 baseline score (2)",
+                    "Duration (months) of current depression (2)",
+                    "No. failed AD trials in current episode (2)")
+
+# Create empty df that will contain model stats
+table_subgroup <- tibble(
+  Predictor = character(),
+  `Numerator DF` = numeric(),
+  `Denominator DF` = numeric(),
+  `F` = numeric(),
+  P = numeric()
+)
+
+for (i in seq_along(subgroups)) {
+
+  current_df <- filter(pslct, !is.na(.data[[subgroups[i]]]))
+  
+  current_formula <- as.formula(paste0("hamd_total ~ condition * week * ", 
+                                       subgroups[i], 
+                                       " + (week|subject)"))
+  current_model <- lmer(current_formula, current_df)
+  
+  table_subgroup <- table_subgroup %>%
+    rbind(setNames(c(
+      subgroup_names[i],
+      tidy(anova(current_model))[7, 4:7]
+      ),
+      names(table_subgroup)))
+}
+
+# Transform model output df to flextable
+subgroup_ft <- table_subgroup %>%
+  mutate(Denominator.DF = round(Denominator.DF),
+         `F` = round(`F`, 2),
+         P = round(P, 3)) %>%
+  select(Predictor, `F`, 
+         `Numerator DF` = Numerator.DF, `Denominator DF` = Denominator.DF,
+         P) %>%
+  flextable() %>%
+  bold(~ P < 0.05, 5) %>%
+  fit_pagewidth() 
+
+save_as_docx(subgroup_ft, path = "output/Subgroup_Analyses_Ftests.docx")
+
+subgroup_ft
+```
+
+*Note:* (1) Categorical predictor (yes/no), (2) Numeric predictor. DF degrees of 
+freedom. 
+
+# Blinding integrity
+Chi-square tests to see if participants remained blinded with regard to their 
+experimental condition.
+
+```{r blinding}
+ft_blinding <- endpoint %>%
+  with(table(blind_tdcs, condition)) %>%
+  as.data.frame.matrix() %>%
+  mutate(`Double sham` = paste0(`Double sham`, " (", round(100*`Double sham`/sum(`Double sham`)), "%)"),
+         `Double-active` = paste0(`Double-active`, " (", round(100*`Double-active`/sum(`Double-active`)), "%)"),
+         `tDCS only` = paste0(`tDCS only`, " (", round(100*`tDCS only`/sum(`tDCS only`)), "%)")
+  ) %>%
+  rbind(
+    endpoint %>%
+      with(table(blind_DI, condition)) %>%
+      as.data.frame.matrix() %>%
+      mutate(`Double sham` = paste0(`Double sham`, " (", round(100*`Double sham`/sum(`Double sham`)), "%)"),
+             `Double-active` = paste0(`Double-active`, " (", round(100*`Double-active`/sum(`Double-active`)), "%)"),
+             `tDCS only` = paste0(`tDCS only`, " (", round(100*`tDCS only`/sum(`tDCS only`)), "%)")
+      )
+  ) %>%
+  rownames_to_column(var = " ") %>%
+  add_row(" " = "Brain stimulation", .before = 0) %>%
+  add_row(" " = "Digital intervention", .before = 4) %>%
+  mutate("Chi-square" = case_when(
+    row_number() == 2 ~ report_chisq(with(endpoint, table(blind_tdcs, condition))),
+    row_number() == 5 ~ report_chisq(with(endpoint, table(blind_DI, condition)))
+  )) %>%
+  flextable() %>%
+  italic(i = c(1, 4)) %>%
+  merge_at(i = 1, j = 1:5) %>% 
+  merge_at(i = 4, j = 1:5) %>% 
+  merge_at(i = 2:3, j = 5) %>%
+  merge_at(i = 5:6, j = 5) %>%
+  # align(i = c(1, 4), align = "center") %>%
+  fix_border_issues() %>%
+  fit_pagewidth() #%>%
+
+ft_blinding %>%
+  save_as_docx(path = "output/Table_Blinding.docx")
+
+ft_blinding
+```
+
+
+# Adverse Events
+
+```{r prep-side-effects}
+sidefx <- endpoint %>%
+  mutate(condition = factor(condition, levels = c("Double-active",
+                                                  "tDCS only",
+                                                  "Double sham"))
+         ) %>%
+  group_by(condition) %>%
+  summarize(
+    group_size = sum(!is.na(no_side_fx)),
+    across(
+      .cols = all_of(side_fx),
+      .fns = list(occurences = ~sum(as.logical(.x), na.rm = TRUE),
+                  percent = ~round(100*(sum(as.logical(.x), na.rm = TRUE)/sum(!is.na(.x))), 0),
+                  output_occurence = ~paste(sum(as.logical(.x), na.rm = TRUE),
+                                  " (",
+                                  round(100*(sum(as.logical(.x), na.rm = TRUE)/sum(!is.na(.x))), 0),
+                                  ")",
+                                  sep = "")),
+      .names = "{fn}_{col}"),
+    across(
+      .cols = all_of(side_fx)[2:4],
+      .fns = list(median = ~median(.x, na.rm = TRUE),
+                  q25 = ~quantile(.x, .25, na.rm = TRUE),
+                  q75 = ~quantile(.x, .75, na.rm = TRUE),
+                  output_median = ~paste(median(.x, na.rm = TRUE),
+                                         " (",
+                                         quantile(.x, .25, na.rm = TRUE),
+                                         "-",
+                                         quantile(.x, .75, na.rm = TRUE),
+                                         ")",
+                                         sep = "")),
+      .names = "{fn}_{col}"),
+    across(
+      .cols = all_of(side_fx)[2:4],
+      .fns = list(output_mean = ~paste(round(mean(.x, na.rm = TRUE), digits = 2),
+                                         " (",
+                                         min(.x, na.rm = TRUE),
+                                         ", ",
+                                         max(.x, na.rm = TRUE),
+                                         ")",
+                                         sep = "")),
+      .names = "{fn}_{col}")
+    ) %>%
+  ungroup() %>%
+  rotate_df(cn = TRUE)
+
+# Update header names
+colnames(sidefx) = paste(names(sidefx), "---(N = ", as.matrix(sidefx[1, ]), ")", sep = "")
+
+table_sidefx <- sidefx %>%
+  rownames_to_column(var = "Type") %>%
+  filter(substr(Type, 1, 6) == "output") %>%
+  mutate(Event = c("No adverse event reported",
+                   "≥ 1 mild adverse event",
+                   "≥ 1 moderate adverse event",
+                   "≥ 1 severe adverse event",
+                   "Mild adverse events",
+                   "Moderate adverse events",
+                   "Severe adverse events",
+                   "Mild adverse events",
+                   "Moderate adverse events",
+                   "Severe adverse events")) %>%
+  relocate(Event, .after = Type) %>%
+  select(-Type)
+```
+
+
+```{r create-table-side-fx}
+for(fx in side_fx){
+  fx_logical <- paste0(fx, "_logical")
+  endpoint[[fx_logical]] <-  as.logical(endpoint[[fx]])
+  p1 <- test_independence(filter(endpoint, condition != "tDCS only"), "condition", fx_logical)
+  p2 <- test_independence(filter(endpoint, condition != "Double-active"), "condition", fx_logical)
+  p3 <- test_independence(filter(endpoint, condition != "Double sham"), "condition", fx_logical)
+  
+  if(fx == side_fx[1]){
+    p_table <- data.frame("P Value---Double-active vs. Double sham" = p1,
+                          "P Value---tDCS only vs. Double sham" = p2,
+                          "P Value---Double-active vs. tDCS only" = p3, 
+                          check.names = FALSE)
+  } else {
+  p_table[nrow(p_table) + 1, ] <- c(p1, p2, p3)
+  }
+}
+
+for(fx in side_fx[2:4]){
+    formula <- paste(fx, " ~  condition")
+    
+    model <- glm.nb(formula,
+                    filter(endpoint, condition != "tDCS only"))
+    p1 <- tidy(model)$p.value[2]
+
+    model <- glm.nb(formula,
+                    filter(endpoint, condition != "Double-active"))
+    p2 <- tidy(model)$p.value[2]
+
+    model <- glm.nb(formula,
+                    filter(endpoint, condition != "Double sham"))
+    p3 <- tidy(model)$p.value[2]
+    
+    p_table[nrow(p_table) + 1, ] <- c(p1, p2, p3)
+  }
+
+
+ft_sidefx <- cbind(table_sidefx[1:7, ], p_table) %>%
+  mutate(
+    across(starts_with("P Value"),
+           ~ paste(as.character(round(.x, 3)),
+                   case_when(.x < 0.001 ~ "***",
+                             .x < 0.01 ~ "**",
+                             .x < 0.05 ~ "*",
+                             TRUE ~ ""))),
+    across(starts_with("P Value"),
+           ~ paste(case_when(.x == "0 ***" ~ "< .001 ***",
+                             .x == "1 " ~ "> .999",
+                             TRUE ~ substr(.x, 2, 100))))
+    ) %>%
+  add_row(Event = "Severity of reported adverse event at week 6 — no. (%)",
+          .before = 1) %>%
+  add_row(Event = "Median no. of reported adverse events at week 6 (interquartile range)",
+          .after = 5) %>%
+  replace(is.na(.), "") %>%
+  flextable() %>%
+  separate_header(sep = "---") %>%
+  fit_pagewidth()
+
+save_as_docx(ft_sidefx, path = "output/Table_AdverseEffects_Endpoint.docx")
+
+ft_sidefx
+```
+*Note:* Tthe last week (here week 6) is evaluated
+and an adverse event had to be at least remotely associated with tDCS to
+be included. For tests of significance, the chi-square test was used to compare
+presence of adverse events, and negative binomial regression for the
+counts of adverse events.
+
+## Each adverse event separately 
+Extensive material for supplement
+
+```{r sup-for-each-ae}
+# define variables
+ae_nos <- sapply(1:16, function(x) paste0("side_", x))
+desc_aes <- c("Headache", "Neck ache", "Pain at the left side", 
+             "Pain on the right side", "Tingling", "Itching", "Buzzing", 
+             "Heat/Burning", "Local redness", "Somnolence", 
+             "Concentration diffculties", "Mood Improvement", "Mood worsening", 
+             "Fatigue", "Nausea", "Dizziness")
+
+# Create summary table
+table_ae_ordered <- endpoint %>%
+  summarize(across(
+    all_of(ae_nos),
+    ~sum(as.numeric(.), na.rm=TRUE))
+  ) %>%
+  rotate_df(rn = "item") %>%
+  mutate(Symptom = desc_aes) %>%
+  rename(total = V1) %>%
+  arrange(desc(total))
+
+# Prepare variables for loop
+aes_ordered <- table_ae_ordered %>%
+  select(item) %>%
+  pull() 
+
+# Create variable for every side effect and every severity
+for (presence in aes_ordered) {
+  severity = str_replace(presence, "side", "side_g")
+  
+  endpoint <- endpoint %>%
+    mutate("{presence}_mild" := if_else(is.na(.data[[severity]]),
+                                        .data[[presence]] == 9,  # never evaluates to TRUE, but differentes between FALSE and NA
+                                        .data[[severity]] == 2),
+           "{presence}_moderate" := if_else(is.na(.data[[severity]]),
+                                            .data[[presence]] == 9,
+                                            .data[[severity]] == 3),
+           "{presence}_severe" := if_else(is.na(.data[[severity]]),
+                                          .data[[presence]] == 9,
+                                          .data[[severity]] == 4)
+    )
+}
+
+# Prepare results table
+table_all_aes <- data.frame(matrix(nrow = 0, ncol = 8))
+colnames(table_all_aes) <- c("Event",
+                             levels(endpoint$condition_alt), 
+                             "Double-active vs. tDCS only",
+                             "Double-active vs. Double sham",
+                             "tDCS only vs. Double sham",
+                             "active tDCS vs. sham tDCS")
+
+severities = c("Mild", "Moderate", "Severe")
+
+endpoint_nods <- filter(endpoint, condition != "Double sham")
+endpoint_nopo <- filter(endpoint, condition != "tDCS only")
+endpoint_noda <- filter(endpoint, condition != "Double-active")
+
+# Loop over adverse events
+for (ae_p in aes_ordered) {
+  ae_g <- gsub("side_", "side_g_", {{ae_p}})
+
+  current_ae_desc <- table_ae_ordered %>%
+    filter(item == ae_p) %>%
+    pull(Symptom)
+  
+  table_all_aes[nrow(table_all_aes)+1, 1] <- current_ae_desc
+  
+  # Loop over severities mild-severe
+  for (i in 2:4) {
+    current_sev <- paste0(ae_p, "_", tolower(severities[i-1]))
+
+    ns <- endpoint %>%
+      group_by(condition_alt) %>%
+      summarize(n = paste0(
+        sum(.data[[ae_g]] == i, na.rm=TRUE),
+        " (",
+        round(sum(.data[[ae_g]] == i, na.rm=TRUE)/sum(!is.na(.data[[ae_p]]))*100),
+        ")")
+        ) %>%
+      pull(n)
+    
+    table_all_aes[nrow(table_all_aes)+1, ] <- c(
+      severities[i-1],
+      ns,
+      ifelse(
+        any(endpoint_nods[[current_sev]], na.rm=TRUE),
+        test_independence(endpoint_nods, "condition", current_sev), 
+        "-"),
+      ifelse(
+        any(endpoint_nopo[[current_sev]], na.rm=TRUE),
+        test_independence(endpoint_nopo, "condition", current_sev), 
+        "-"),
+      ifelse(
+        any(endpoint_noda[[current_sev]], na.rm=TRUE),
+        test_independence(endpoint_noda, "condition", current_sev), 
+        "-"),
+      ifelse(
+        any(endpoint[[current_sev]], na.rm=TRUE),
+        test_independence(endpoint, "condition_tdcs", current_sev),
+        "-")
+      )
+  }   
+  # total ae
+  ns_total <- endpoint %>%
+    group_by(condition_alt) %>%
+    summarize(n = paste0(
+      sum(.data[[ae_p]] == "1", na.rm=TRUE),
+      " (",
+      round(sum(.data[[ae_p]] == "1", na.rm=TRUE)/sum(!is.na(.data[[ae_p]]))*100),
+      ")")
+    ) %>%
+    pull(n)
+  
+  table_all_aes[nrow(table_all_aes)+1, ] <- c(
+    "Total",
+    ns_total,
+    test_independence(filter(endpoint, condition != "Double sham"),
+                      "condition" ,ae_p), 
+    test_independence(filter(endpoint, condition != "tDCS only"),
+                      "condition", ae_p), 
+    test_independence(filter(endpoint, condition != "Double-active"),
+                      "condition", ae_p), 
+    test_independence(endpoint, "condition_tdcs", ae_p)
+    )
+}
+
+
+table_all_aes <- table_all_aes %>%
+  mutate(
+    across(
+    `Double-active vs. tDCS only`:`active tDCS vs. sham tDCS`,
+    ~ifelse(.x == "-", 100, round(as.numeric(.x), 3))),
+    across(
+      `Double-active vs. tDCS only`:`active tDCS vs. sham tDCS`,
+      ~case_when(
+        .x == 100 ~ "-",
+        .x == 1 ~ ">0.99",
+        .x == 0 ~ "<0.001",
+        .x > 0.01 ~ as.character(round(.x, 2)),
+        TRUE ~ as.character(.x)
+    ))
+  )
+
+ft_all_aes <- table_all_aes[-c(1:5), ] %>%
+  flextable() %>%
+  fit_pagewidth()
+  
+ft_all_aes
+
+save_as_docx(ft_all_aes, path = "output/SupTable_separateAEs.docx")
+
+
+```
+
+
+
+
+
+
+
