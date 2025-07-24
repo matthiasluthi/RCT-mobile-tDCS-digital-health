@@ -796,7 +796,7 @@ fit_pagewidth <- function(ft, pgwidth = 6){
   return(ft_out)
 }
 
-# Data cleaning --------------
+# Additional data cleaning --------------
 
 trials <- psylect %>% 
   rename(
