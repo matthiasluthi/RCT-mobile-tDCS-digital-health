@@ -10,9 +10,8 @@ The full study protocol is available [here](https://www.tandfonline.com/doi/10.1
 
 # 📊 Analysis Overview
 1_data_cleaning.R
-- Initial formatting and harmonization of trial data
+- Initial formatting, harmonization/merging and organization of trial data
 - Handling of missing values
-- Creation of long/wide data formats
 - Preparation of analysis-ready datasets
 
 2_main_analyses.Rmd
@@ -23,7 +22,7 @@ The full study protocol is available [here](https://www.tandfonline.com/doi/10.1
 - Chi-square tests for blinding integrity
 - Adverse event comparison using chi-square tests and negative binomial regression
 - Generation of plots and tables and automated saving to Word
-- Rendered HTML report included
+- [**Rendered report (HTML)**](https://matthiasluthi.github.io/rct-brain-stimulation-elderly/2_primary_analyses.html) - – Full output with tables, figures, and statistical results
 
 3_secondary_analyses.R
 - Additional cleaning and imputation of missing values using Random Forest (missForest)
@@ -33,4 +32,4 @@ The full study protocol is available [here](https://www.tandfonline.com/doi/10.1
 - Visualizations of clustering solutions and model effects
 
 # 📁 Study Data
-The study data is publicly available in reduced form at [**OSF**](https://osf.io/jn5st/). 
+The study data is publicly available in reduced form at [OSF](https://osf.io/jn5st/). 
