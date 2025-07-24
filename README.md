@@ -1,4 +1,4 @@
-# Analysis of the Psylect Trial: Home-Use tDCS for Depression
+# Analysis of the Psylect Trial: Home-Use tDCS & Digital Health for Depression
 
 This repository contains the analysis scripts for a **phase-II compliant, double-blinded, randomized controlled trial** (ClinicalTrials.gov ID [NCT04889976](https://clinicaltrials.gov/ct2/show/NCT04889976)) evaluating the efficacy of self-administered, home-use transcranial direct current stimulation (tDCS) with or without a digital health intervention for major depressive disorder.
 
