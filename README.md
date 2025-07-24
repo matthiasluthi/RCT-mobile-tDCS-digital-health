@@ -26,7 +26,7 @@ The full study protocol is available [here](https://www.tandfonline.com/doi/10.1
 - Rendered HTML report included
 
 3_secondary_analyses.R
-- Additional cleaning and imputation using Random Forest (missForest)
+- Additional cleaning and imputation of missing values using Random Forest (missForest)
 - Hierarchical clustering of HDRS-17 symptom items to identify data-driven clusters
 - Confirmatory analysis using k-means clustering
 - Mixed-effects models applied to cluster scores to test for differential treatment response
