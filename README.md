@@ -9,12 +9,12 @@ The full study protocol is available [here](https://www.tandfonline.com/doi/10.1
 > 📄 Ancillary analysis on symptom clusters was published in the [Brazilian Journal of Psychiatry](https://www.bjp.org.br/details/3592/en-US/effects-of-home-use-transcranial-direct-current-stimulation-on-clusters-of-depressive-symptoms--an-ancillary-analysis-of-the-psylect-study)
 
 # 📊 Analysis Overview
-1_data_cleaning.R
+**1_data_cleaning.R**
 - Initial formatting, harmonization/merging and organization of trial data
 - Handling of missing values
 - Preparation of analysis-ready datasets
 
-2_main_analyses.Rmd
+**2_main_analyses.Rmd**
 - Summary tables of demographic and clinical variables
 - Geographical mapping of participant locations
 - Primary outcome analysis using linear mixed models
@@ -24,7 +24,7 @@ The full study protocol is available [here](https://www.tandfonline.com/doi/10.1
 - Generation of plots and tables and automated saving to Word
 - [**Rendered report (HTML)**](https://matthiasluthi.github.io/rct-brain-stimulation-elderly/2_primary_analyses.html) - Full output with tables, figures, and statistical results
 
-3_secondary_analyses.R
+**3_secondary_analyses.R**
 - Additional cleaning and imputation of missing values using Random Forest (missForest)
 - Hierarchical clustering of HDRS-17 symptom items to identify data-driven clusters
 - Confirmatory analysis using k-means clustering
