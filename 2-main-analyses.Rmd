@@ -39,7 +39,7 @@ library(ggmap)
 
 select <- dplyr::select
 
-source("0_custom_functions.R")
+source("0-custom-functions.R")
 
 load("data/psylect_clean.RData")
 load("data/psylect_endpoint_clean.RData")
