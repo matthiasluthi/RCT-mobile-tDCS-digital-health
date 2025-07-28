@@ -16,7 +16,7 @@ trials <- read.csv(
 meds <- read_excel("data/psylect_medications.xlsx")
 
 # For geomapping
-register_google(key = "AIzaSyCqtWx9Ld6Jc65ju-bGcN_GaQ0MBQvB-DE")
+register_google(key = "GOOGLE_API_KEY") # Insert Google API key 
 
 
 # Clean screening data =========
